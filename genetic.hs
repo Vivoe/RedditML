@@ -3,50 +3,33 @@
 module Main where
 import System.Random
 import Data.List
+import Data.Char
+import Data.Maybe
 import Control.Monad
 import Control.Applicative ((<*>), (<$>))
-
-import GHC.Prim
-import Control.Monad.Primitive as V
-
 import qualified Data.Vector as V
-import qualified Data.Vector.Mutable as V
-import qualified Data.Vector.Algorithms.Intro as V
+
 import Debug.Trace
 
 main :: IO()
-main = choosePrograms 100 >>= print
---main = do
---    one <- n1
---    two <- n2
---    writeFile "genetic.txt" $ show one ++ "\n\n" ++ show two
---    (c1, c2) <- getCrossover (one, False) (two, False)
---    writeFile "GeneticCrossover.txt" $ show c1 ++ "\n\n" ++ show c2
-
---main = do
---    tree <- randNode
---    writeFile "genetic.txt" $ show tree
---    mutatedNode <- mutate tree
---    writeFile "geneticMutate.txt" $ show mutatedNode
---    mutatedTree <- treeMapM mutate tree
---    writeFile "geneticMutateTree.txt" $ show mutatedTree
+main = print 3
+--main = choosePrograms 100 >>= print
+--main = take 40 $ map (+3) [1..]
 
 data OPType = Add | Sub | Mult | Div deriving (Show, Eq)
 
 type Size = Int
 type Depth = Int
 type Fitness = Float
+type NumValues = (Int, Float)
+type DataSet = [[Float]]
 
-data Node = OP OPType Node Node Depth Size | Const Float Depth Size | Var Char Depth Size
-data Program = Program Node Fitness deriving (Show)
+data Node = OP OPType Node Node Depth Size | Const Float Depth Size | Var Char Depth Size deriving (Eq)
+data Program = Program Node Fitness deriving (Eq, Show)
 data NodeInfo = This | L | R
 
---n1 = return $ OP Add (Const 1.1231 1 1) (Const  2.678 1 1) 0 3
---n2 = return $ OP Sub (Const 3.1231 1 1) (Const  4.678 1 1) 0 3
-n1 = randNode
-n2 = randNode
---n1 = return $ Var 'X' 0 1
---n2 = return $ Var 'Y' 0 1
+--n1 = randNode
+--n2 = randNode
 
 instance Ord Program where
     (Program _ f1) <= (Program _ f2) = f1 <= f2
@@ -57,38 +40,96 @@ instance Show Node where
     show (Const val depth size) = "\n(Const " ++ show val ++" "++ show depth ++")"
     show (Var val depth size) = "\n(Var " ++ show val ++" "++ show depth ++")"
 
---note that vector has an update field
---runGeneration :: V.Vector Program -> Either IO (V.Vector Program) IO()
---runGeneration programs = do
---    n <- rand 1 :: IO Float
---    if n < 0.5 then
---        Left $ mapM (treeMapM (mutate . getNode)) programs
---        else
---            do
---                (p1, p2) <- choosePrograms (-1 + V.length programs)
---                (n1, n2) <- getCrossover (p1, False) (p2, False)
---                Left $ V.update programs <(p1, n1), (p2, n2)>
+--Pregeneration: check score of best program
+--Overwrite worst 2 with best 2
+--mutate
+--iterate over vector for n crossovers.
 
-mutatePrograms :: (V.PrimMonad m, V.MVector v e) => v (V.PrimState m) e -> m()
-mutatePrograms vec = V.forM_ $ V.write vec (treeMapM (mutate . getNode))
+--crossoverPrograms :: V.Vector Program -> Int -> IO (V.Vector Program)
+--crossoverPrograms vec n = iterateM cr
 
-choosePrograms :: Int -> IO (Int, Int)
-choosePrograms l = (iterateM (tourney l) (tuple <$> rand l <*> rand l)) !! 4
+--pipe var values to fitness funciton
+--pipe max vars to mutation, gen
+
+--get data
+--create vector
+--iterate through generations
+--make iterate to be usable for takewhile, return program instead of new vector.
+evolve :: IO()
+--evolve = do
+
+
+getValues :: IO (DataSet, NumValues)
+getValues = do
+    file <- readFile "problem.dat"
+    ds <- return $ formatData file
+    return (tail ds, (floor $ (head ds)!!0, (head ds!!1)))
+    
+
+formatData :: String -> DataSet
+formatData = map (toWords . words) . lines
+  where toWords = map read
+
+endGenetic :: V.Vector Program -> Bool
+endGenetic vec = (getFitness . V.maximum) vec > threshold
+
+generation :: V.Vector Program -> DataSet -> NumValues-> IO (V.Vector Program)
+generation rawVec ds nv = do
+    vec <- return $ V.map (fitnessFunction ds) rawVec
+    best <- return $ V.maximum vec
+    oVec <- ((mutatePrograms nv) <=< crossoverPrograms) vec
+    return $ oVec V.// [(V.minIndex oVec, best)]
+
+
+fitnessFunction :: DataSet -> Program-> Program 
+fitnessFunction ds (Program n _ ) = Program n $ foldr (\a b-> b + evalFunction n a) 0 ds
+
+--assume [vars ... result]
+evalFunction :: Node -> [Float] -> Float
+evalFunction n vv = (((-1) *) . abs) ((fitFunc n) - (last vv))
+    where fitFunc (OP Add left right _ _) = (fitFunc left) + (fitFunc right)
+          fitFunc (OP Sub left right _ _) = (fitFunc left) - (fitFunc right)
+          fitFunc (OP Mult left right _ _) = (fitFunc left) * (fitFunc right)
+          fitFunc (OP Div left right _ _)
+            |rVal == 0 = (fitFunc left)
+            |otherwise = (fitFunc left) / rVal
+            where rVal = fitFunc right
+          fitFunc (Const val _ _) = val
+          fitFunc (Var var _ _) = vv !! (ord var - 65)
+
+mutatePrograms :: NumValues -> V.Vector Program -> IO (V.Vector Program)
+mutatePrograms nv vec= V.mapM (mutateProgram nv) vec
+
+mutateProgram :: NumValues -> Program -> IO Program
+mutateProgram nv (Program n fit) = Program <$> (treeMapM (mutateNode nv) n) <*> return fit
+
+crossoverPrograms :: V.Vector Program -> IO (V.Vector Program)
+crossoverPrograms vec = (iterateM crossoverProgram (return vec)) !! crossoverRounds
+
+--dont bother fitnessing: check fitness on start of each generation
+crossoverProgram :: V.Vector Program -> IO (V.Vector Program)
+crossoverProgram vec = do 
+    (a, b) <- tourney vec ((V.length vec), (V.length vec))
+    (newA, newB) <- getCrossover (getNode $ vec V.! a, False) (getNode $ vec V.! b, False)
+    return $ vec V.// [(a, Program newA $ -999999), (b, Program newB $ -9999999)]
+
+choosePrograms :: V.Vector Program -> IO (Int, Int)
+choosePrograms vec = (iterateM (tourney vec) (tuple <$> rand (V.length vec) <*> rand (V.length vec))) !! tourneyRounds
     where tuple a b = (a, b)
 
 --a>b
-tourney :: Int -> (Int, Int) -> IO (Int, Int)
-tourney range (a, b) = choose <$> (rand range :: IO Int)
+--Fix, currently based off sorted list. 
+tourney :: V.Vector Program -> (Int, Int) -> IO (Int, Int)
+tourney vec (a, b) = choose <$> (rand (V.length vec) :: IO Int)
     where choose n 
-            |n > a = (n, a)
-            |n == a = (a, a-1)
-            |n > b = (a, n)
+            |getFitnessN vec n > getFitnessN vec a = (n, a)
+            |getFitnessN vec n == getFitnessN vec a = (a, a-1)
+            |getFitnessN vec n > getFitnessN vec b = (a, n)
             |otherwise = (a, b)
 
 iterateM :: (Monad m) => (a -> m a) -> m a -> [m a]
 iterateM f = iterate (f =<<)
 
---LOSES INFORMATION, DOES NOT REBUILD TREE
 getCrossover :: (Node, Bool) -> (Node, Bool) -> IO (Node, Node)
 getCrossover (n1, True) (n2, True) = return (n2, n1)
 getCrossover (n1, b1) (n2, b2) = do
@@ -116,16 +157,17 @@ updateDepth (OP t l r d s) depth = OP t (updateDepth l $ depth + 1) (updateDepth
 updateDepth (Const v d s) depth = Const v depth s
 updateDepth (Var v d s) depth = Var v depth s
 
-genRandomTree :: Int -> IO Node
-genRandomTree depth
+--pipe here
+genRandomTree :: NumValues -> Int -> IO Node
+genRandomTree nv@(v, m) depth
     |depth < 3 = (rand 1 :: IO Float) >>= gen
     |otherwise = (rand 0.3 :: IO Float) >>= gen
     where gen n
             |n > 0.3 = OP <$> randType <*> tree1 <*> tree2 <*> return depth <*> (updateSize <$> tree1 <*> tree2)
-            |n > 0.15 = Const <$> (rand 10 :: IO Float) <*> return depth <*> return 1
-            |otherwise = Var <$> randChar 'Z' <*> return depth <*> return 1
-          tree1 = genRandomTree (depth + 1)
-          tree2 = genRandomTree (depth + 1)
+            |n > 0.15 = Const <$> ((\x -> x - m) <$> (rand (2 * m) :: IO Float)) <*> return depth <*> return 1
+            |otherwise = Var <$> randChar (chr (v + 64)) <*> return depth <*> return 1
+          tree1 = genRandomTree nv (depth + 1)
+          tree2 = genRandomTree nv (depth + 1)
 
 updateSize :: Node -> Node -> Size
 updateSize n1 n2 = 1 + getSize n1 + getSize n2
@@ -135,13 +177,14 @@ getSize (OP _ _ _ _ s) = s
 getSize (Const _ _ s) = s
 getSize (Var _ _ s) = s
 
-mutate :: Node -> IO Node
-mutate (OP opType left right depth size) = OP <$> randType <*> return left <*> return right <*> return depth <*> return size
-mutate (Const _ depth size) = Const <$> (rand 10 :: IO Float) <*> return depth <*> return size
-mutate (Var _ depth size) = Var <$> randChar 'Z' <*> return depth <*> return size
+--pipe here
+mutate :: NumValues -> Node -> IO Node
+mutate _ (OP opType left right depth size) = OP <$> randType <*> return left <*> return right <*> return depth <*> return size
+mutate (_, m) (Const _ depth size) = Const <$> ((\x -> x - m) <$> (rand (2 * m) :: IO Float)) <*> return depth <*> return size
+mutate (v, _)(Var _ depth size) = Var <$> randChar (chr (v + 64)) <*> return depth <*> return size
 
-mutateNode :: Node -> IO Node
-mutateNode node = (mutateProb <$> (rand 1 :: IO Float)) >>= (\x -> if x then (mutate node) else return node)
+mutateNode :: NumValues -> Node -> IO Node
+mutateNode nv node = (mutateProb <$> (rand 1 :: IO Float)) >>= (\x -> if x then (mutate nv node) else return node)
 
 mutateProb :: Float -> Bool
 mutateProb n 
@@ -163,6 +206,9 @@ treeMap f n
     |otherwise = node
     where node = f n
           recur (OP opType left right depth size) = OP opType (treeMap f left) (treeMap f right) depth size
+
+getFitnessN :: V.Vector Program -> Int -> Float
+getFitnessN vec n = getFitness $ vec V.! n
 
 getNode :: Program -> Node
 getNode (Program n _) = n
@@ -194,4 +240,11 @@ randType = getType <$> (rand 3 :: IO Int)
 getType :: Int -> OPType
 getType n = [Add, Sub, Mult, Div] !! n
 
-randNode = genRandomTree 0
+tourneyRounds = 4
+
+crossoverRounds = 10
+
+threshold :: Float
+threshold = 1e-2
+
+randNode nv = genRandomTree nv 0
