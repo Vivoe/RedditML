@@ -1,3 +1,5 @@
+--This all needs to be changed! Wrong algorithm!
+
 --{-# LANGUAGE OverloadedStrings #-}
 
 module Main where
